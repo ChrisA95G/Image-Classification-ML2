@@ -1,0 +1,13 @@
+[project]
+name = "image-classification-ml2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastai>=2.8.2",
+    "kaggle>=1.7.4.5",
+    "pip>=25.1.1",
+    "torch>=2.7.1",
+    "torchvision>=0.22.1",
+]
