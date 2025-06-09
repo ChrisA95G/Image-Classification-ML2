@@ -113,11 +113,11 @@ def main():
     # For debug mode, metrics on tiny datasets might not be very meaningful but ensure code runs
     train_f1_score = torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device)
     train_hamming_dist = torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device)
-    train_accuracy = torchmetrics.Accuracy(task="multilabel", num_labels=NUM_CLASSES).to(device) # Exact match ratio
+    train_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
 
     val_f1_score = torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device)
     val_hamming_dist = torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device)
-    val_accuracy = torchmetrics.Accuracy(task="multilabel", num_labels=NUM_CLASSES).to(device) # Exact match ratio
+    val_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
     for epoch in range(current_epochs):
         model.train() # Set the model to training mode
         total_train_loss = 0
@@ -125,7 +125,7 @@ def main():
         # Reset training metrics at the start of each epoch
         train_f1_score.reset()
         train_hamming_dist.reset()
-        train_accuracy.reset()
+        train_exact_match.reset()
 
         for batch_idx, (images, labels) in enumerate(train_loader):
             # Move data to the GPU if available
@@ -151,7 +151,7 @@ def main():
             preds = (torch.sigmoid(outputs) > 0.5).int()
             train_f1_score.update(preds, labels_int)
             train_hamming_dist.update(preds, labels_int)
-            train_accuracy.update(preds, labels_int)
+            train_exact_match.update(preds, labels_int)
 
             if batch_idx > 0 and (batch_idx % 10 == 0 or DEBUG_MODE): # Log more frequently in debug mode
                 print(f"Epoch {epoch+1}/{current_epochs}, Batch {batch_idx}/{len(train_loader)}, Train Loss: {loss.item():.4f}")
@@ -159,15 +159,15 @@ def main():
         avg_train_loss = total_train_loss / len(train_loader)
         epoch_train_f1 = train_f1_score.compute()
         epoch_train_hamming = train_hamming_dist.compute()
-        epoch_train_acc = train_accuracy.compute()
-        print(f"Epoch {epoch+1}/{current_epochs}, Avg Training Loss: {avg_train_loss:.4f}, Training F1: {epoch_train_f1:.4f}, Training Hamming: {epoch_train_hamming:.4f}, Training Accuracy: {epoch_train_acc:.4f}")
+        epoch_train_em = train_exact_match.compute()
+        print(f"Epoch {epoch+1}/{current_epochs}, Avg Training Loss: {avg_train_loss:.4f}, Training F1: {epoch_train_f1:.4f}, Training Hamming: {epoch_train_hamming:.4f}, Training ExactMatch: {epoch_train_em:.4f}")
 
         # --- Validation Loop ---
         model.eval() # Set the model to evaluation mode
         total_val_loss = 0
         val_f1_score.reset()
         val_hamming_dist.reset()
-        val_accuracy.reset()
+        val_exact_match.reset()
         printed_sample_comparison = False # Flag to print only one sample comparison per epoch
 
         with torch.no_grad():
@@ -183,7 +183,7 @@ def main():
                 preds = (torch.sigmoid(outputs) > 0.5).int()
                 val_f1_score.update(preds, labels_int)
                 val_hamming_dist.update(preds, labels_int)
-                val_accuracy.update(preds, labels_int)
+                val_exact_match.update(preds, labels_int)
 
                 # Print a sample comparison in DEBUG_MODE for the first batch of the epoch
                 if DEBUG_MODE and not printed_sample_comparison and len(labels_int) > 0:
@@ -195,8 +195,8 @@ def main():
         avg_val_loss = total_val_loss / len(val_loader)
         epoch_val_f1 = val_f1_score.compute()
         epoch_val_hamming = val_hamming_dist.compute()
-        epoch_val_acc = val_accuracy.compute()
-        print(f"Epoch {epoch+1}/{current_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation F1: {epoch_val_f1:.4f}, Validation Hamming: {epoch_val_hamming:.4f}, Validation Accuracy: {epoch_val_acc:.4f}")
+        epoch_val_em = val_exact_match.compute()
+        print(f"Epoch {epoch+1}/{current_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation F1: {epoch_val_f1:.4f}, Validation Hamming: {epoch_val_hamming:.4f}, Validation ExactMatch: {epoch_val_em:.4f}")
 
 if __name__ == "__main__":
     main()
