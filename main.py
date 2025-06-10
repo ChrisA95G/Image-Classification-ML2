@@ -10,11 +10,15 @@ import torch.nn as nn
 import time
 import torchmetrics
 from tqdm import tqdm
+import json
+from torch.utils.tensorboard import SummaryWriter
 
 # Configuration
-CUSTOM_DATA_PATH = Path("/Users/niklashohn/Desktop/human-protein-atlas-image-classification")
-TRAIN_CSV_PATH = CUSTOM_DATA_PATH/"train.csv"
-TRAIN_IMG_DIR = CUSTOM_DATA_PATH/"train/"
+CUSTOM_DATA_PATH = Path(
+    "/Users/niklashohn/Desktop/human-protein-atlas-image-classification"
+)
+TRAIN_CSV_PATH = CUSTOM_DATA_PATH / "train.csv"
+TRAIN_IMG_DIR = CUSTOM_DATA_PATH / "train/"
 NUM_CLASSES = 28
 NUM_EPOCHS = 50
 BATCH_SIZE = 32
@@ -22,6 +26,8 @@ DEBUG_MODE = True
 NUM_EPOCHS_DEBUG_MODE = 5
 FREEZE_BACKBONE = True
 MAX_GRAD_NORM = 1.0
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
 
 
 def create_multi_hot_label(target_string):
@@ -34,10 +40,8 @@ def create_multi_hot_label(target_string):
 def prepare_data():
     df = pd.read_csv(TRAIN_CSV_PATH)
     df["multi_hot_labels"] = df["Target"].apply(create_multi_hot_label)
-    
-    train_df, val_df = train_test_split(
-        df, test_size=0.2, random_state=42
-    )
+
+    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
 
     if DEBUG_MODE:
         train_df = train_df.sample(frac=0.01, random_state=42)
@@ -45,7 +49,7 @@ def prepare_data():
 
     print(f"Training set size: {len(train_df)}")
     print(f"Validation set size: {len(val_df)}")
-    
+
     return train_df, val_df
 
 
@@ -174,9 +178,7 @@ def setup_training(model):
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cosine_epochs, eta_min=1e-6
     )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, [warmup, cosine], [warmup_epochs]
-    )
+    scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup, cosine])
 
     return optimizer, scheduler
 
@@ -209,7 +211,7 @@ def setup_metrics(device):
     return metrics
 
 
-def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
+def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device, writer, epoch):
     model.train()
     total_loss = 0
     for metric in metrics["train"].values():
@@ -236,16 +238,21 @@ def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
         metrics["train"]["hamming"].update(preds, labels_int)
         metrics["train"]["exact_match"].update(preds, labels_int)
 
-        if batch_idx > 0 and (batch_idx % 10 == 0 or DEBUG_MODE):
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+        pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+        writer.add_scalar("train/batch_loss", loss.item(), epoch * len(train_loader) + batch_idx)
 
-    return total_loss / len(train_loader)
+    avg_loss = total_loss / len(train_loader)
+    writer.add_scalar("train/epoch_loss", avg_loss, epoch)
+    writer.add_scalar("train/f1", metrics["train"]["f1"].compute(), epoch)
+    writer.add_scalar("train/hamming", metrics["train"]["hamming"].compute(), epoch)
+    writer.add_scalar("train/exact_match", metrics["train"]["exact_match"].compute(), epoch)
+    
+    return avg_loss
 
 
-def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch):
+def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch, writer):
     model.eval()
     total_loss = 0
-    printed_sample = False
 
     for metric in metrics["val"].values():
         metric.reset()
@@ -266,15 +273,60 @@ def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch):
             metrics["val"]["hamming"].update(preds, labels_int)
             metrics["val"]["exact_match"].update(preds, labels_int)
 
-            if DEBUG_MODE and not printed_sample and len(labels_int) > 0:
-                print("\nSample Prediction vs. True Label:")
-                print(f"Predicted: {preds[0].cpu().numpy()}")
-                print(f"True     : {labels_int[0].cpu().numpy()}")
-                printed_sample = True
-
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-    return total_loss / len(val_loader)
+    avg_loss = total_loss / len(val_loader)
+    writer.add_scalar("val/epoch_loss", avg_loss, epoch)
+    writer.add_scalar("val/f1", metrics["val"]["f1"].compute(), epoch)
+    writer.add_scalar("val/hamming", metrics["val"]["hamming"].compute(), epoch)
+    writer.add_scalar("val/exact_match", metrics["val"]["exact_match"].compute(), epoch)
+    
+    return avg_loss
+
+
+def save_checkpoint(model, optimizer, scheduler, epoch, metrics, loss, is_best=False):
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "train_loss": loss,
+        "metrics": {
+            "train": {k: v.compute().item() for k, v in metrics["train"].items()},
+            "val": {k: v.compute().item() for k, v in metrics["val"].items()},
+        },
+    }
+
+    torch.save(checkpoint, CHECKPOINT_DIR / "latest_checkpoint.pt")
+    if is_best:
+        torch.save(checkpoint, CHECKPOINT_DIR / "best_checkpoint.pt")
+
+    metrics_file = CHECKPOINT_DIR / "metrics_history.json"
+    if metrics_file.exists():
+        with metrics_file.open("r") as f:
+            history = json.load(f)
+    else:
+        history = []
+
+    history.append(
+        {"epoch": epoch, "train_loss": loss, "metrics": checkpoint["metrics"]}
+    )
+
+    with metrics_file.open("w") as f:
+        json.dump(history, f, indent=2)
+
+
+def load_checkpoint(model, optimizer, scheduler):
+    checkpoint_path = CHECKPOINT_DIR / "latest_checkpoint.pt"
+    if not checkpoint_path.exists():
+        return 0, float("inf")
+
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    return checkpoint["epoch"], checkpoint["train_loss"]
 
 
 def main():
@@ -299,26 +351,45 @@ def main():
     loss_fn = nn.BCEWithLogitsLoss()
     current_epochs = NUM_EPOCHS_DEBUG_MODE if DEBUG_MODE else NUM_EPOCHS
 
+    start_epoch, best_loss = load_checkpoint(model, optimizer, scheduler)
+    print(f"Resuming from epoch {start_epoch + 1}")
+
+    writer = SummaryWriter(f"runs/run_{time.strftime('%Y%m%d_%H%M%S')}")
+    
     start_time = time.time()
-    for epoch in range(current_epochs):
+    for epoch in range(start_epoch, current_epochs):
         print(f"\nEpoch {epoch + 1}/{current_epochs}")
         avg_train_loss = train_epoch(
-            model, train_loader, optimizer, loss_fn, metrics, device
+            model, train_loader, optimizer, loss_fn, metrics, device, writer, epoch
         )
         avg_val_loss = validate_epoch(
-            model, val_loader, loss_fn, metrics, device, epoch
+            model, val_loader, loss_fn, metrics, device, epoch, writer
         )
 
         scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        writer.add_scalar("learning_rate", current_lr, epoch)
 
         print("\nMetrics:")
-        print(f"Train - Loss: {avg_train_loss:.4f}, F1: {metrics['train']['f1'].compute():.4f}, "
-              f"Hamming: {metrics['train']['hamming'].compute():.4f}, "
-              f"Exact Match: {metrics['train']['exact_match'].compute():.4f}")
-        print(f"Val   - Loss: {avg_val_loss:.4f}, F1: {metrics['val']['f1'].compute():.4f}, "
-              f"Hamming: {metrics['val']['hamming'].compute():.4f}, "
-              f"Exact Match: {metrics['val']['exact_match'].compute():.4f}")
+        print(
+            f"Train - Loss: {avg_train_loss:.4f}, F1: {metrics['train']['f1'].compute():.4f}, "
+            f"Hamming: {metrics['train']['hamming'].compute():.4f}, "
+            f"Exact Match: {metrics['train']['exact_match'].compute():.4f}"
+        )
+        print(
+            f"Val   - Loss: {avg_val_loss:.4f}, F1: {metrics['val']['f1'].compute():.4f}, "
+            f"Hamming: {metrics['val']['hamming'].compute():.4f}, "
+            f"Exact Match: {metrics['val']['exact_match'].compute():.4f}"
+        )
 
+        is_best = avg_val_loss < best_loss
+        if is_best:
+            best_loss = avg_val_loss
+        save_checkpoint(
+            model, optimizer, scheduler, epoch + 1, metrics, avg_val_loss, is_best
+        )
+
+    writer.close()
     print(f"\nTotal training time: {time.time() - start_time:.2f}s")
 
 
