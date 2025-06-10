@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import timm
 import torch.nn as nn
+import time
 import torchmetrics
 
 # --- Configuration ---
@@ -13,7 +14,7 @@ TRAIN_CSV_PATH = 'data/train.csv'
 TRAIN_IMG_DIR = 'data/train/'
 NUM_CLASSES = 28
 BATCH_SIZE = 32 # Keep this as is for full runs, or reduce for very quick memory checks
-NUM_EPOCHS = 5
+NUM_EPOCHS = 20
 NUM_EPOCHS_DEBUG_MODE = 3
 DEBUG_MODE = False  # Set to False for full training
 FREEZE_BACKBONE = True # Set to False to train all layers from the start
@@ -150,6 +151,8 @@ def main():
     val_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
 
     epoch_history = [] # To store metrics from each epoch
+
+    start_time = time.time() # Start timer
     for epoch in range(current_epochs):
         model.train() # Set the model to training mode
         total_train_loss = 0
@@ -244,6 +247,11 @@ def main():
             "val_em": epoch_val_em.item()
         })
 
+    end_time = time.time() # End timer
+    total_training_time = end_time - start_time
+    print(f"\nTotal training time: {total_training_time:.2f} seconds")
+    print(f"Average time per epoch: {total_training_time/current_epochs:.2f} seconds")
+
     # --- Print Training Summary ---
     print("\n\n--- Full Training Summary ---")
     header = f"{'Epoch':<7} | {'Train Loss':<12} | {'Train F1':<10} | {'Train Hamming':<15} | {'Train EM':<10} | {'Val Loss':<10} | {'Val F1':<8} | {'Val Hamming':<13} | {'Val EM':<8}"
@@ -251,6 +259,7 @@ def main():
     print("-" * len(header))
     for data in epoch_history:
         print(f"{data['epoch']:<7} | {data['avg_train_loss']:.4f:<12} | {data['train_f1']:.4f:<10} | {data['train_hamming']:.4f:<15} | {data['train_em']:.4f:<10} | {data['avg_val_loss']:.4f:<10} | {data['val_f1']:.4f:<8} | {data['val_hamming']:.4f:<13} | {data['val_em']:.4f:<8}")
+
 
 if __name__ == "__main__":
     main()
