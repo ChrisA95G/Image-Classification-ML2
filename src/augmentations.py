@@ -1,8 +1,14 @@
 import torchvision.transforms as T
 
+
 class CustomAugmentationTransform:
-    def __init__(self, apply_augmentation=True, rotation_degrees=30,
-                 stretch_scale_range=(0.8, 1.2), stretch_shear_degrees=(-10, 10)):
+    def __init__(
+        self,
+        apply_augmentation=True,
+        rotation_degrees=30,
+        stretch_scale_range=(0.8, 1.2),
+        stretch_shear_degrees=(-10, 10),
+    ):
         """
         Custom transform for image augmentation including rotation and stretching.
         "Stretching" is achieved via scaling and shearing using RandomAffine.
@@ -20,16 +26,18 @@ class CustomAugmentationTransform:
                                                      Example: 10 or (-10, 10) or (-10, 10, -5, 5).
         """
         self.apply_augmentation = apply_augmentation
-        
+
         if self.apply_augmentation:
-            self.transform = T.Compose([
-                T.RandomRotation(degrees=rotation_degrees),
-                T.RandomAffine(
-                    degrees=0,
-                    scale=stretch_scale_range,
-                    shear=stretch_shear_degrees
-                )
-            ])
+            self.transform = T.Compose(
+                [
+                    T.RandomRotation(degrees=rotation_degrees),
+                    T.RandomAffine(
+                        degrees=0,
+                        scale=stretch_scale_range,
+                        shear=stretch_shear_degrees,
+                    ),
+                ]
+            )
         else:
             self.transform = None
 
