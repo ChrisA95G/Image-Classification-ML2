@@ -1,11 +1,12 @@
 from torch.utils.data import DataLoader
 from src.dataset import ProteinDataset
+from src.augmentations import CustomAugmentationTransform
 import torch
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import timm
 import torch.nn as nn
-import torchmetrics # For calculating metrics
+import torchmetrics
 
 # --- Configuration ---
 TRAIN_CSV_PATH = 'data/train.csv'
@@ -13,9 +14,11 @@ TRAIN_IMG_DIR = 'data/train/'
 NUM_CLASSES = 28
 BATCH_SIZE = 32 # Keep this as is for full runs, or reduce for very quick memory checks
 NUM_EPOCHS = 10
-DEBUG_MODE = True # Set to False for full training
+NUM_EPOCHS_DEBUG_MODE = 3
+DEBUG_MODE = True  # Set to False for full training
+FREEZE_BACKBONE = True # Set to False to train all layers from the start
 
-    # Function to convert the 'Target' string to a multi-hot encoded vector
+# Function to convert the 'Target' string to a multi-hot encoded vector
 def create_multi_hot_label(target_string):
         labels = [int(i) for i in target_string.split(' ')]
         multi_hot_vector = torch.zeros(NUM_CLASSES)
@@ -36,22 +39,33 @@ def main():
     # --- 2. Split Data into Training and Validation Sets ---
 
     # We'll split the dataframe, for example, an 80/20 split.
-    # stratify=df['Target'] can help ensure label distribution is similar in both sets, which is good practice.
-    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
+    train_df, val_df = train_test_split(df, test_size=0.2, random_state=28)
 
     if DEBUG_MODE:
         print("--- RUNNING IN DEBUG MODE ---")
         # Use a small fraction of the data for quick testing
-        train_df = train_df.sample(frac=0.02, random_state=42) # e.g., 1% of training data
-        val_df = val_df.sample(frac=0.02, random_state=42)     # e.g., 1% of validation data
+        train_df = train_df.sample(frac=0.2, random_state=42) # e.g., 1% of training data
+        val_df = val_df.sample(frac=0.2, random_state=42)     # e.g., 1% of validation data
 
     print(f"Training set size: {len(train_df)}")
     print(f"Validation set size: {len(val_df)}")
-    # --- 4. Create the DataLoaders ---
+
+    # --- 3. Create Augmentation Transforms ---
+    train_aug_transform = CustomAugmentationTransform(
+        apply_augmentation=True,
+        rotation_degrees=45,
+        stretch_scale_range=(0.75, 1.25),
+        stretch_shear_degrees=(-15, 15, -15, 15)
+    )
+
+    # For validation, typically no data augmentation is applied,
+    # or only basic normalization/resizing if those aren't part of the model itself.
+    # Assuming ProteinDataset handles necessary base transforms like ToTensor and Resize.
+    val_aug_transform = CustomAugmentationTransform(apply_augmentation=False)
 
     # Create dataset instances
-    train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR)
-    val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR)
+    train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR, transform=train_aug_transform)
+    val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR, transform=val_aug_transform)
 
     # Create DataLoader instances
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
@@ -84,7 +98,6 @@ def main():
     )
 
     loss_fn = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     # 4. Initialize the new weights by averaging the old ones and repeating
     # This transfers the learned feature knowledge.
     with torch.no_grad():
@@ -100,10 +113,26 @@ def main():
     # 5. Replace the model's original patch embedding layer with our new one
     model.patch_embed.proj = new_patch_embed
 
+    # --- 6. Optionally Freeze Backbone ---
+    if FREEZE_BACKBONE:
+        print("--- FREEZING BACKBONE ---")
+        for name, param in model.named_parameters():
+            if not name.startswith('head.') and not name.startswith('patch_embed.'):
+                param.requires_grad = False
+            else:
+                # Ensure head and modified patch_embed are trainable
+                param.requires_grad = True
+        # Create optimizer with only trainable parameters
+        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
+    else:
+        print("--- TRAINING ALL LAYERS ---")
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+
     # --- Training Loop ---
     current_epochs = NUM_EPOCHS
     if DEBUG_MODE:
-        current_epochs = 3 # Train for only a couple of epochs in debug mode
+        current_epochs = NUM_EPOCHS_DEBUG_MODE
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -193,6 +222,7 @@ def main():
                     printed_sample_comparison = True
 
         avg_val_loss = total_val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
         epoch_val_f1 = val_f1_score.compute()
         epoch_val_hamming = val_hamming_dist.compute()
         epoch_val_em = val_exact_match.compute()

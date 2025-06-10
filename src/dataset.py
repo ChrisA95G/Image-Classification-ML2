@@ -8,11 +8,12 @@ from sklearn.model_selection import train_test_split
 
 
 class ProteinDataset(Dataset):
-    def __init__(self, df, image_dir):
+    def __init__(self, df, image_dir, transform=None):
         self.df = df
         self.image_dir = image_dir
+        self.custom_transform = transform # Store the passed augmentation transform
         # Define transforms inside the dataset for clarity
-        self.transform = transforms.Compose([
+        self.base_transform = transforms.Compose([
             transforms.Resize((384, 384)),
             transforms.ToTensor()
         ])
@@ -38,11 +39,15 @@ class ProteinDataset(Dataset):
         image_tensors = []
         for color in colors:
             image = Image.open(base_path + f"{color}.png").convert('L')
-            image_tensors.append(self.transform(image))
+            image_tensors.append(self.base_transform(image))
             
         image_tensor = torch.cat(image_tensors, dim=0)
         
+        # Apply custom augmentations if they are provided
+        if self.custom_transform:
+            image_tensor = self.custom_transform(image_tensor)
+            
         # Apply normalization
         image_tensor = self.normalize(image_tensor)
-        
+
         return image_tensor, label_vector
