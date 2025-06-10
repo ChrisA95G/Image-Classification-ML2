@@ -67,9 +67,6 @@ def main():
     train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR, transform=train_aug_transform)
     val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR, transform=val_aug_transform)
 
-    print(f"Number of samples in train_dataset (after argumentation): {len(train_dataset)}")
-    print(f"Number of samples in val_dataset (after argumentation): {len(val_dataset)}")
-
 
     # Create DataLoader instances
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
@@ -151,6 +148,8 @@ def main():
     val_f1_score = torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device)
     val_hamming_dist = torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device)
     val_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
+
+    epoch_history = [] # To store metrics from each epoch
     for epoch in range(current_epochs):
         model.train() # Set the model to training mode
         total_train_loss = 0
@@ -231,6 +230,27 @@ def main():
         epoch_val_hamming = val_hamming_dist.compute()
         epoch_val_em = val_exact_match.compute()
         print(f"Epoch {epoch+1}/{current_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation F1: {epoch_val_f1:.4f}, Validation Hamming: {epoch_val_hamming:.4f}, Validation ExactMatch: {epoch_val_em:.4f}")
+
+        # Store metrics for this epoch
+        epoch_history.append({
+            "epoch": epoch + 1,
+            "avg_train_loss": avg_train_loss,
+            "train_f1": epoch_train_f1.item(), # Use .item() to get scalar value
+            "train_hamming": epoch_train_hamming.item(),
+            "train_em": epoch_train_em.item(),
+            "avg_val_loss": avg_val_loss,
+            "val_f1": epoch_val_f1.item(),
+            "val_hamming": epoch_val_hamming.item(),
+            "val_em": epoch_val_em.item()
+        })
+
+    # --- Print Training Summary ---
+    print("\n\n--- Full Training Summary ---")
+    header = f"{'Epoch':<7} | {'Train Loss':<12} | {'Train F1':<10} | {'Train Hamming':<15} | {'Train EM':<10} | {'Val Loss':<10} | {'Val F1':<8} | {'Val Hamming':<13} | {'Val EM':<8}"
+    print(header)
+    print("-" * len(header))
+    for data in epoch_history:
+        print(f"{data['epoch']:<7} | {data['avg_train_loss']:.4f:<12} | {data['train_f1']:.4f:<10} | {data['train_hamming']:.4f:<15} | {data['train_em']:.4f:<10} | {data['avg_val_loss']:.4f:<10} | {data['val_f1']:.4f:<8} | {data['val_hamming']:.4f:<13} | {data['val_em']:.4f:<8}")
 
 if __name__ == "__main__":
     main()
