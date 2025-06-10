@@ -8,89 +8,56 @@ import timm
 import torch.nn as nn
 import time
 import torchmetrics
+from tqdm import tqdm
 
-# --- Configuration ---
+# Configuration
 TRAIN_CSV_PATH = 'data/train.csv'
 TRAIN_IMG_DIR = 'data/train/'
 NUM_CLASSES = 28
-BATCH_SIZE = 32 # Keep this as is for full runs, or reduce for very quick memory checks
 NUM_EPOCHS = 20
+BATCH_SIZE = 32
+DEBUG_MODE = True
 NUM_EPOCHS_DEBUG_MODE = 3
-DEBUG_MODE = False  # Set to False for full training
-FREEZE_BACKBONE = True # Set to False to train all layers from the start
+FREEZE_BACKBONE = True
 
-# Function to convert the 'Target' string to a multi-hot encoded vector
 def create_multi_hot_label(target_string):
-        labels = [int(i) for i in target_string.split(' ')]
-        multi_hot_vector = torch.zeros(NUM_CLASSES)
-        multi_hot_vector[labels] = 1
-        return multi_hot_vector
+    labels = [int(i) for i in target_string.split(' ')]
+    multi_hot_vector = torch.zeros(NUM_CLASSES)
+    multi_hot_vector[labels] = 1
+    return multi_hot_vector
 
-def main():
-
-    # --- 1. Load and Preprocess the CSV ---
-
-    # Load the csv file
+def prepare_data():
     df = pd.read_csv(TRAIN_CSV_PATH)
-
-
-    # Apply this function to create a new column with the correct label format
     df['multi_hot_labels'] = df['Target'].apply(create_multi_hot_label)
-
-    # --- 2. Split Data into Training and Validation Sets ---
-
-    # We'll split the dataframe, for example, an 80/20 split.
-    train_df, val_df = train_test_split(df, test_size=0.2, random_state=28)
+    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42, stratify=['Traget'])
 
     if DEBUG_MODE:
-        print("--- RUNNING IN DEBUG MODE ---")
-        # Use a small fraction of the data for quick testing
-        train_df = train_df.sample(frac=0.01, random_state=42) # e.g., 1% of training data
-        val_df = val_df.sample(frac=0.01, random_state=42)     # e.g., 1% of validation data
+        train_df = train_df.sample(frac=0.01, random_state=42)
+        val_df = val_df.sample(frac=0.01, random_state=42)
 
     print(f"Training set size: {len(train_df)}")
     print(f"Validation set size: {len(val_df)}")
+    return train_df, val_df
 
-    # --- 3. Create Augmentation Transforms ---
-    train_aug_transform = CustomAugmentationTransform(
+def create_datasets(train_df, val_df):
+    train_transform = CustomAugmentationTransform(
         apply_augmentation=True,
         rotation_degrees=45,
         stretch_scale_range=(0.75, 1.25),
         stretch_shear_degrees=(-15, 15, -15, 15)
     )
+    val_transform = CustomAugmentationTransform(apply_augmentation=False)
 
-    # For validation, typically no data augmentation is applied,
-    # or only basic normalization/resizing if those aren't part of the model itself.
-    # Assuming ProteinDataset handles necessary base transforms like ToTensor and Resize.
-    val_aug_transform = CustomAugmentationTransform(apply_augmentation=False)
+    train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR, transform=train_transform)
+    val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR, transform=val_transform)
 
-    # Create dataset instances
-    train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR, transform=train_aug_transform)
-    val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR, transform=val_aug_transform)
+    return train_dataset, val_dataset
 
-
-    # Create DataLoader instances
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
-
-    # --- Example of how to get one batch ---
-    print("\nExample batch:")
-    images, labels = next(iter(train_loader))
-    print(f"Images batch shape: {images.shape}") # Should be [32, 4, 384, 384]
-    print(f"Labels batch shape: {labels.shape}") # Should be [32, 28]
-
-    # 1. Load the pre-trained model as usual
-    model = timm.create_model(
-        'vit_base_patch16_384',
-        pretrained=True,
-        num_classes=28
-    )
-
-    # 2. Get the weights from the original patch embedding layer (the first Conv2d)
+def create_model():
+    model = timm.create_model('vit_base_patch16_384', pretrained=True, num_classes=28)
     original_patch_embed = model.patch_embed.proj
     original_weights = original_patch_embed.weight.data # Shape: [768, 3, 16, 16]
 
-    # 3. Create a new Conv2d layer with 4 input channels
     new_patch_embed = nn.Conv2d(
         in_channels=4,
         out_channels=original_patch_embed.out_channels,
@@ -99,167 +66,139 @@ def main():
         padding=original_patch_embed.padding
     )
 
-    loss_fn = nn.BCEWithLogitsLoss()
-    # 4. Initialize the new weights by averaging the old ones and repeating
-    # This transfers the learned feature knowledge.
     with torch.no_grad():
-        # Average the weights across the 3 input channels
-        new_weights = original_weights.mean(dim=1, keepdim=True)
-        # Repeat this average for our 4 new input channels
-        new_weights = new_weights.repeat(1, 4, 1, 1)
+        new_weights = original_weights.mean(dim=1, keepdim=True).repeat(1, 4, 1, 1)
         new_patch_embed.weight.data = new_weights
-        # Also copy over the bias if it exists
         if new_patch_embed.bias is not None:
             new_patch_embed.bias.data = original_patch_embed.bias.data
 
-    # 5. Replace the model's original patch embedding layer with our new one
     model.patch_embed.proj = new_patch_embed
+    return model
 
-    # --- 6. Optionally Freeze Backbone ---
+def setup_training(model):
     if FREEZE_BACKBONE:
-        print("--- FREEZING BACKBONE ---")
         for name, param in model.named_parameters():
-            if not name.startswith('head.') and not name.startswith('patch_embed.'):
-                param.requires_grad = False
-            else:
-                # Ensure head and modified patch_embed are trainable
-                param.requires_grad = True
-        # Create optimizer with only trainable parameters
+            param.requires_grad = name.startswith(('head.', 'patch_embed.'))
         optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
     else:
-        print("--- TRAINING ALL LAYERS ---")
         optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+    return optimizer, scheduler
 
-    # --- Training Loop ---
-    current_epochs = NUM_EPOCHS
-    if DEBUG_MODE:
-        current_epochs = NUM_EPOCHS_DEBUG_MODE
+def setup_metrics(device):
+    metrics = {
+        'train': {
+            'f1': torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device),
+            'hamming': torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device),
+            'exact_match': torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
+        },
+        'val': {
+            'f1': torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device),
+            'hamming': torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device),
+            'exact_match': torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
+        }
+    }
+    return metrics
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
+def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
+    model.train()
+    total_loss = 0
+    for metric in metrics['train'].values():
+        metric.reset()
 
-    # --- Initialize Metrics ---
-    # Using 'macro' average for F1 score as a common choice for multi-label
-    # For debug mode, metrics on tiny datasets might not be very meaningful but ensure code runs
-    train_f1_score = torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device)
-    train_hamming_dist = torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device)
-    train_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
+    batch_idx=0
+    for batch_idx, (images, labels) in tqdm(enumerate(train_loader), desc=f"{batch_idx+1}/{BATCH_SIZE}"):
+        images = images.to(device)
+        labels_float = labels.to(device).float()
+        labels_int = labels.to(device).int()
 
-    val_f1_score = torchmetrics.F1Score(task="multilabel", num_labels=NUM_CLASSES, average='macro').to(device)
-    val_hamming_dist = torchmetrics.HammingDistance(task="multilabel", num_labels=NUM_CLASSES).to(device)
-    val_exact_match = torchmetrics.ExactMatch(task="multilabel", num_labels=NUM_CLASSES).to(device)
+        outputs = model(images)
+        loss = loss_fn(outputs, labels_float)
 
-    epoch_history = [] # To store metrics from each epoch
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-    start_time = time.time() # Start timer
-    for epoch in range(current_epochs):
-        model.train() # Set the model to training mode
-        total_train_loss = 0
+        total_loss += loss.item()
+        preds = (torch.sigmoid(outputs) > 0.5).int()
+        
+        metrics['train']['f1'].update(preds, labels_int)
+        metrics['train']['hamming'].update(preds, labels_int)
+        metrics['train']['exact_match'].update(preds, labels_int)
 
-        # Reset training metrics at the start of each epoch
-        train_f1_score.reset()
-        train_hamming_dist.reset()
-        train_exact_match.reset()
+        if batch_idx > 0 and (batch_idx % 10 == 0 or DEBUG_MODE):
+            print(f"Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
 
-        for batch_idx, (images, labels) in enumerate(train_loader):
-            # Move data to the GPU if available
+    return total_loss / len(train_loader)
+
+def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch):
+    model.eval()
+    total_loss = 0
+    printed_sample = False
+
+    for metric in metrics['val'].values():
+        metric.reset()
+
+    with torch.no_grad():
+        batch_idx=0
+        for images, labels in tqdm(val_loader, desc=f"{batch_idx+1}/{BATCH_SIZE}"):
+            batch_idx+=1
             images = images.to(device)
-            # Labels for loss should be float, for metrics typically int
             labels_float = labels.to(device).float()
             labels_int = labels.to(device).int()
 
-            # 1. Forward pass
             outputs = model(images)
-
-            # 2. Calculate loss
             loss = loss_fn(outputs, labels_float)
+            total_loss += loss.item()
 
-            # 3. Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            total_train_loss += loss.item()
-
-            # Calculate predictions for metrics
             preds = (torch.sigmoid(outputs) > 0.5).int()
-            train_f1_score.update(preds, labels_int)
-            train_hamming_dist.update(preds, labels_int)
-            train_exact_match.update(preds, labels_int)
+            metrics['val']['f1'].update(preds, labels_int)
+            metrics['val']['hamming'].update(preds, labels_int)
+            metrics['val']['exact_match'].update(preds, labels_int)
 
-            if batch_idx > 0 and (batch_idx % 10 == 0 or DEBUG_MODE): # Log more frequently in debug mode
-                print(f"Epoch {epoch+1}/{current_epochs}, Batch {batch_idx}/{len(train_loader)}, Train Loss: {loss.item():.4f}")
+            if DEBUG_MODE and not printed_sample and len(labels_int) > 0:
+                print(f"\nSample Prediction vs. True Label (Epoch {epoch+1})")
+                print(f"Predicted: {preds[0].cpu().numpy()}")
+                print(f"True     : {labels_int[0].cpu().numpy()}")
+                printed_sample = True
 
-        avg_train_loss = total_train_loss / len(train_loader)
-        epoch_train_f1 = train_f1_score.compute()
-        epoch_train_hamming = train_hamming_dist.compute()
-        epoch_train_em = train_exact_match.compute()
-        print(f"Epoch {epoch+1}/{current_epochs}, Avg Training Loss: {avg_train_loss:.4f}, Training F1: {epoch_train_f1:.4f}, Training Hamming: {epoch_train_hamming:.4f}, Training ExactMatch: {epoch_train_em:.4f}")
+    return total_loss / len(val_loader)
 
-        # --- Validation Loop ---
-        model.eval() # Set the model to evaluation mode
-        total_val_loss = 0
-        val_f1_score.reset()
-        val_hamming_dist.reset()
-        val_exact_match.reset()
-        printed_sample_comparison = False # Flag to print only one sample comparison per epoch
+def main():
+    train_df, val_df = prepare_data()
+    print(f"Training set size: {len(train_df)}")
+    print(f"Validation set size: {len(val_df)}")
 
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images = images.to(device)
-                labels_float = labels.to(device).float()
-                labels_int = labels.to(device).int()
+    train_dataset, val_dataset = create_datasets(train_df, val_df)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
-                outputs = model(images)
-                loss = loss_fn(outputs, labels_float)
-                total_val_loss += loss.item()
+    model = create_model()
+    optimizer, scheduler = setup_training(model)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
-                preds = (torch.sigmoid(outputs) > 0.5).int()
-                val_f1_score.update(preds, labels_int)
-                val_hamming_dist.update(preds, labels_int)
-                val_exact_match.update(preds, labels_int)
+    metrics = setup_metrics(device)
+    loss_fn = nn.BCEWithLogitsLoss()
+    current_epochs = NUM_EPOCHS_DEBUG_MODE if DEBUG_MODE else NUM_EPOCHS
 
-                # Print a sample comparison in DEBUG_MODE for the first batch of the epoch
-                if DEBUG_MODE and not printed_sample_comparison and len(labels_int) > 0:
-                    print(f"\n--- Sample Prediction vs. True Label (Epoch {epoch+1}) ---")
-                    print(f"Predicted: {preds[0].cpu().numpy()}")
-                    print(f"True     : {labels_int[0].cpu().numpy()}")
-                    printed_sample_comparison = True
+    start_time = time.time()
+    for epoch in range(current_epochs):
+        avg_train_loss = train_epoch(model, train_loader, optimizer, loss_fn, metrics, device)
+        avg_val_loss = validate_epoch(model, val_loader, loss_fn, metrics, device, epoch)
 
-        avg_val_loss = total_val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
-        epoch_val_f1 = val_f1_score.compute()
-        epoch_val_hamming = val_hamming_dist.compute()
-        epoch_val_em = val_exact_match.compute()
-        print(f"Epoch {epoch+1}/{current_epochs}, Validation Loss: {avg_val_loss:.4f}, Validation F1: {epoch_val_f1:.4f}, Validation Hamming: {epoch_val_hamming:.4f}, Validation ExactMatch: {epoch_val_em:.4f}")
 
-        # Store metrics for this epoch
-        epoch_history.append({
-            "epoch": epoch + 1,
-            "avg_train_loss": avg_train_loss,
-            "train_f1": epoch_train_f1.item(), # Use .item() to get scalar value
-            "train_hamming": epoch_train_hamming.item(),
-            "train_em": epoch_train_em.item(),
-            "avg_val_loss": avg_val_loss,
-            "val_f1": epoch_val_f1.item(),
-            "val_hamming": epoch_val_hamming.item(),
-            "val_em": epoch_val_em.item()
-        })
-
-    end_time = time.time() # End timer
-    total_training_time = end_time - start_time
-    print(f"\nTotal training time: {total_training_time:.2f} seconds")
-    print(f"Average time per epoch: {total_training_time/current_epochs:.2f} seconds")
-
-    # --- Print Training Summary ---
-    print("\n\n--- Full Training Summary ---")
-    header = f"{'Epoch':<7} | {'Train Loss':<12} | {'Train F1':<10} | {'Train Hamming':<15} | {'Train EM':<10} | {'Val Loss':<10} | {'Val F1':<8} | {'Val Hamming':<13} | {'Val EM':<8}"
-    print(header)
-    print("-" * len(header))
-    for data in epoch_history:
-        print(f"{data['epoch']:<7} | {data['avg_train_loss']:<12.4f} | {data['train_f1']:<10.4f} | {data['train_hamming']:<15.4f} | {data['train_em']:<10.4f} | {data['avg_val_loss']:<10.4f} | {data['val_f1']:<8.4f} | {data['val_hamming']:<13.4f} | {data['val_em']:<8.4f}")
-
+        print(f"\nEpoch {epoch+1}/{current_epochs}")
+        print(f"Train Loss: {avg_train_loss:.4f}\n"    
+              f"    F1: {metrics['train']['f1'].compute():.4f}\n"
+              f"    Hamming: {metrics['train']['hamming'].compute():.4f}\n"
+              f"    Exact Match: {metrics['train']['exact_match'].compute():.4f}")
+        print(f"Val Loss: {avg_val_loss:.4f}\n"
+              f"    F1: {metrics['val']['f1'].compute():.4f}\n"
+              f"    Hamming: {metrics['val']['hamming'].compute():.4f}\n"
+              f"    Exact Match: {metrics['val']['exact_match'].compute():.4f}")
 
 if __name__ == "__main__":
     main()
