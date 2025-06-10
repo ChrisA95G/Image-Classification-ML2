@@ -45,8 +45,8 @@ def main():
     if DEBUG_MODE:
         print("--- RUNNING IN DEBUG MODE ---")
         # Use a small fraction of the data for quick testing
-        train_df = train_df.sample(frac=0.2, random_state=42) # e.g., 1% of training data
-        val_df = val_df.sample(frac=0.2, random_state=42)     # e.g., 1% of validation data
+        train_df = train_df.sample(frac=0.01, random_state=42) # e.g., 1% of training data
+        val_df = val_df.sample(frac=0.01, random_state=42)     # e.g., 1% of validation data
 
     print(f"Training set size: {len(train_df)}")
     print(f"Validation set size: {len(val_df)}")
@@ -258,7 +258,7 @@ def main():
     print(header)
     print("-" * len(header))
     for data in epoch_history:
-        print(f"{data['epoch']:<7} | {data['avg_train_loss']:.4f:<12} | {data['train_f1']:.4f:<10} | {data['train_hamming']:.4f:<15} | {data['train_em']:.4f:<10} | {data['avg_val_loss']:.4f:<10} | {data['val_f1']:.4f:<8} | {data['val_hamming']:.4f:<13} | {data['val_em']:.4f:<8}")
+        print(f"{data['epoch']:<7} | {data['avg_train_loss']:<12.4f} | {data['train_f1']:<10.4f} | {data['train_hamming']:<15.4f} | {data['train_em']:<10.4f} | {data['avg_val_loss']:<10.4f} | {data['val_f1']:<8.4f} | {data['val_hamming']:<13.4f} | {data['val_em']:<8.4f}")
 
 
 if __name__ == "__main__":
