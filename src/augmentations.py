@@ -1,4 +1,3 @@
-import torch
 import torchvision.transforms as T
 
 class CustomAugmentationTransform:
@@ -21,15 +20,18 @@ class CustomAugmentationTransform:
                                                      Example: 10 or (-10, 10) or (-10, 10, -5, 5).
         """
         self.apply_augmentation = apply_augmentation
+        
         if self.apply_augmentation:
             self.transform = T.Compose([
                 T.RandomRotation(degrees=rotation_degrees),
-                T.RandomAffine(degrees=0, # Rotation is handled by RandomRotation
-                               scale=stretch_scale_range,
-                               shear=stretch_shear_degrees)
+                T.RandomAffine(
+                    degrees=0,
+                    scale=stretch_scale_range,
+                    shear=stretch_shear_degrees
+                )
             ])
         else:
-            self.transform = None # No augmentation, only basic preprocessing if any
+            self.transform = None
 
     def __call__(self, image_tensor):
         """
@@ -39,6 +41,6 @@ class CustomAugmentationTransform:
         Returns:
             torch.Tensor: The augmented image tensor.
         """
-        if self.apply_augmentation and self.transform:
-            return self.transform(image_tensor)
-        return image_tensor
+        if not self.apply_augmentation or not self.transform:
+            return image_tensor
+        return self.transform(image_tensor)

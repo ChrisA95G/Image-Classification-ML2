@@ -11,43 +11,34 @@ class ProteinDataset(Dataset):
     def __init__(self, df, image_dir, transform=None):
         self.df = df
         self.image_dir = image_dir
-        self.custom_transform = transform # Store the passed augmentation transform
-        # Define transforms inside the dataset for clarity
+        self.custom_transform = transform
+        self.colors = ['red', 'green', 'blue', 'yellow']
+        
         self.base_transform = transforms.Compose([
             transforms.Resize((384, 384)),
             transforms.ToTensor()
         ])
+        
         self.normalize = transforms.Normalize(
-            mean=[0.5, 0.5, 0.5, 0.5],
-            std=[0.5, 0.5, 0.5, 0.5]
+            mean=[0.5] * 4,
+            std=[0.5] * 4
         )
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        # Get image ID and the pre-processed label tensor
         row = self.df.iloc[idx]
-        image_id = row['Id']
-        label_vector = row['multi_hot_labels']
-
-        # Construct file paths for the four channels
-        base_path = f"{self.image_dir}/{image_id}_"
-        colors = ['red', 'green', 'blue', 'yellow']
+        base_path = f"{self.image_dir}/{row['Id']}_"
         
-        # Load, transform, and stack the images
-        image_tensors = []
-        for color in colors:
-            image = Image.open(base_path + f"{color}.png").convert('L')
-            image_tensors.append(self.base_transform(image))
-            
+        image_tensors = [
+            self.base_transform(Image.open(f"{base_path}{color}.png").convert('L'))
+            for color in self.colors
+        ]
+        
         image_tensor = torch.cat(image_tensors, dim=0)
         
-        # Apply custom augmentations if they are provided
         if self.custom_transform:
             image_tensor = self.custom_transform(image_tensor)
             
-        # Apply normalization
-        image_tensor = self.normalize(image_tensor)
-
-        return image_tensor, label_vector
+        return self.normalize(image_tensor), row['multi_hot_labels']
