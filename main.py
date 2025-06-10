@@ -16,10 +16,10 @@ CUSTOM_DATA_PATH = Path("/Users/niklashohn/Desktop/human-protein-atlas-image-cla
 TRAIN_CSV_PATH = CUSTOM_DATA_PATH/"train.csv"
 TRAIN_IMG_DIR = CUSTOM_DATA_PATH/"train/"
 NUM_CLASSES = 28
-NUM_EPOCHS = 20
+NUM_EPOCHS = 50
 BATCH_SIZE = 32
 DEBUG_MODE = True
-NUM_EPOCHS_DEBUG_MODE = 3
+NUM_EPOCHS_DEBUG_MODE = 5
 FREEZE_BACKBONE = True
 MAX_GRAD_NORM = 1.0
 
@@ -34,8 +34,9 @@ def create_multi_hot_label(target_string):
 def prepare_data():
     df = pd.read_csv(TRAIN_CSV_PATH)
     df["multi_hot_labels"] = df["Target"].apply(create_multi_hot_label)
+    
     train_df, val_df = train_test_split(
-        df, test_size=0.2, random_state=42, stratify=["Traget"]
+        df, test_size=0.2, random_state=42
     )
 
     if DEBUG_MODE:
@@ -44,6 +45,7 @@ def prepare_data():
 
     print(f"Training set size: {len(train_df)}")
     print(f"Validation set size: {len(val_df)}")
+    
     return train_df, val_df
 
 
@@ -213,10 +215,8 @@ def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
     for metric in metrics["train"].values():
         metric.reset()
 
-    batch_idx = 0
-    for batch_idx, (images, labels) in tqdm(
-        enumerate(train_loader), desc=f"{batch_idx + 1}/{BATCH_SIZE}"
-    ):
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc="Training")
+    for batch_idx, (images, labels) in pbar:
         images = images.to(device)
         labels_float = labels.to(device).float()
         labels_int = labels.to(device).int()
@@ -226,11 +226,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
 
         optimizer.zero_grad()
         loss.backward()
-
-        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-        if total_norm > MAX_GRAD_NORM and (batch_idx % 10 == 0 or DEBUG_MODE):
-            print(f"Gradients clipped: {total_norm:.2f} > {MAX_GRAD_NORM}")
-
+        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
         optimizer.step()
 
         total_loss += loss.item()
@@ -241,7 +237,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, metrics, device):
         metrics["train"]["exact_match"].update(preds, labels_int)
 
         if batch_idx > 0 and (batch_idx % 10 == 0 or DEBUG_MODE):
-            print(f"Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
     return total_loss / len(train_loader)
 
@@ -255,9 +251,8 @@ def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch):
         metric.reset()
 
     with torch.no_grad():
-        batch_idx = 0
-        for images, labels in tqdm(val_loader, desc=f"{batch_idx + 1}/{BATCH_SIZE}"):
-            batch_idx += 1
+        pbar = tqdm(val_loader, total=len(val_loader), desc="Validation")
+        for images, labels in pbar:
             images = images.to(device)
             labels_float = labels.to(device).float()
             labels_int = labels.to(device).int()
@@ -272,10 +267,12 @@ def validate_epoch(model, val_loader, loss_fn, metrics, device, epoch):
             metrics["val"]["exact_match"].update(preds, labels_int)
 
             if DEBUG_MODE and not printed_sample and len(labels_int) > 0:
-                print(f"\nSample Prediction vs. True Label (Epoch {epoch + 1})")
+                print("\nSample Prediction vs. True Label:")
                 print(f"Predicted: {preds[0].cpu().numpy()}")
                 print(f"True     : {labels_int[0].cpu().numpy()}")
                 printed_sample = True
+
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
     return total_loss / len(val_loader)
 
@@ -304,6 +301,7 @@ def main():
 
     start_time = time.time()
     for epoch in range(current_epochs):
+        print(f"\nEpoch {epoch + 1}/{current_epochs}")
         avg_train_loss = train_epoch(
             model, train_loader, optimizer, loss_fn, metrics, device
         )
@@ -311,21 +309,17 @@ def main():
             model, val_loader, loss_fn, metrics, device, epoch
         )
 
-        scheduler.step(avg_val_loss)
+        scheduler.step()
 
-        print(f"\nEpoch {epoch + 1}/{current_epochs}")
-        print(
-            f"Train Loss: {avg_train_loss:.4f}\n"
-            f"    F1: {metrics['train']['f1'].compute():.4f}\n"
-            f"    Hamming: {metrics['train']['hamming'].compute():.4f}\n"
-            f"    Exact Match: {metrics['train']['exact_match'].compute():.4f}"
-        )
-        print(
-            f"Val Loss: {avg_val_loss:.4f}\n"
-            f"    F1: {metrics['val']['f1'].compute():.4f}\n"
-            f"    Hamming: {metrics['val']['hamming'].compute():.4f}\n"
-            f"    Exact Match: {metrics['val']['exact_match'].compute():.4f}"
-        )
+        print("\nMetrics:")
+        print(f"Train - Loss: {avg_train_loss:.4f}, F1: {metrics['train']['f1'].compute():.4f}, "
+              f"Hamming: {metrics['train']['hamming'].compute():.4f}, "
+              f"Exact Match: {metrics['train']['exact_match'].compute():.4f}")
+        print(f"Val   - Loss: {avg_val_loss:.4f}, F1: {metrics['val']['f1'].compute():.4f}, "
+              f"Hamming: {metrics['val']['hamming'].compute():.4f}, "
+              f"Exact Match: {metrics['val']['exact_match'].compute():.4f}")
+
+    print(f"\nTotal training time: {time.time() - start_time:.2f}s")
 
 
 if __name__ == "__main__":
