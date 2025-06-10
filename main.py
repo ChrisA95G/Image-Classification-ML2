@@ -13,9 +13,9 @@ TRAIN_CSV_PATH = 'data/train.csv'
 TRAIN_IMG_DIR = 'data/train/'
 NUM_CLASSES = 28
 BATCH_SIZE = 32 # Keep this as is for full runs, or reduce for very quick memory checks
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 NUM_EPOCHS_DEBUG_MODE = 3
-DEBUG_MODE = True  # Set to False for full training
+DEBUG_MODE = False  # Set to False for full training
 FREEZE_BACKBONE = True # Set to False to train all layers from the start
 
 # Function to convert the 'Target' string to a multi-hot encoded vector
@@ -66,6 +66,10 @@ def main():
     # Create dataset instances
     train_dataset = ProteinDataset(df=train_df, image_dir=TRAIN_IMG_DIR, transform=train_aug_transform)
     val_dataset = ProteinDataset(df=val_df, image_dir=TRAIN_IMG_DIR, transform=val_aug_transform)
+
+    print(f"Number of samples in train_dataset (after argumentation): {len(train_dataset)}")
+    print(f"Number of samples in val_dataset (after argumentation): {len(val_dataset)}")
+
 
     # Create DataLoader instances
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
