@@ -12,6 +12,7 @@ import torchmetrics
 from tqdm import tqdm
 import json
 from torch.utils.tensorboard import SummaryWriter
+import os
 
 # Configuration
 CUSTOM_DATA_PATH = Path(
@@ -336,10 +337,10 @@ def main():
 
     train_dataset, val_dataset = create_datasets(train_df, val_df)
     train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
+        train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=os.cpu_count() or 0
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4
+        val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=os.cpu_count() or 0
     )
 
     model = create_model()
@@ -391,6 +392,7 @@ def main():
 
     writer.close()
     print(f"\nTotal training time: {time.time() - start_time:.2f}s")
+    # TODO: Per-Class Threshold optimization!!!
 
 
 if __name__ == "__main__":
