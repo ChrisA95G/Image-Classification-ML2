@@ -25,7 +25,7 @@ BATCH_SIZE = 32
 DEBUG_MODE = False
 NUM_EPOCHS_DEBUG_MODE = 5
 FREEZE_BACKBONE = True
-MAX_GRAD_NORM = 1.0
+MAX_GRAD_NORM = 0.5 # Modified after to high overfitting
 CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
