@@ -1,10 +1,9 @@
-import pandas as pd
 import torch
-import os
 from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms
-from sklearn.model_selection import train_test_split
+from src.config import INPUT_SIZE
+
 
 
 class ProteinDataset(Dataset):
@@ -12,10 +11,10 @@ class ProteinDataset(Dataset):
         self.df = df
         self.image_dir = image_dir
         self.custom_transform = transform
-        self.colors = ["red", "green", "blue", "yellow"]
+        self.colors =  ["red", "green", "blue", "yellow"]
 
         self.base_transform = transforms.Compose(
-            [transforms.Resize((384, 384)), transforms.ToTensor()]
+            [transforms.Resize((INPUT_SIZE, INPUT_SIZE)), transforms.ToTensor()]
         )
 
         self.normalize = transforms.Normalize(mean=[0.5] * 4, std=[0.5] * 4)
@@ -32,7 +31,7 @@ class ProteinDataset(Dataset):
             for color in self.colors
         ]
 
-        image_tensor = torch.cat(image_tensors, dim=0)
+        image_tensor = torch.cat(image_tensors, dim=0) #type: ignore
 
         if self.custom_transform:
             image_tensor = self.custom_transform(image_tensor)
